@@ -7,7 +7,7 @@ Unlike fixed-gain controllers, gain scheduling uses a predefined map or function
 
 Here is an example of how the gains should change as we sweep through the scheduling variable, which is also the scheduling <br>
 variable, which is also a state in the system $\theta$
-![Example Of gained Scheduling]("images/total_gain_scheduling.png")
+![Example Of gained Scheduling](images/total_gain_scheduling.png)
 
 > [!NOTE]  
 > This is not all that easy in practice as we cannot guarantee the robustness of this method
