@@ -69,7 +69,7 @@ def generate_optimal_gains(
 
 
 def gain_scheduler(gain_matrix_structs: list[GainMatrixStruct], beta: float):
-    def basis_function(x: float, x_i: float, gain: np.ndarray) -> np.ndarray:
+    def basis_function(x: float | np.ndarray, x_i: float, gain: np.ndarray) -> np.ndarray:
         return np.exp(-beta * np.abs(x - x_i) ** 2) * gain
 
     funcs = [
@@ -81,6 +81,28 @@ def gain_scheduler(gain_matrix_structs: list[GainMatrixStruct], beta: float):
         return functools.reduce(lambda f, g: f + g(x_), funcs[1:], funcs[0](x_))
 
     return reduction
+
+
+@dataclasses.dataclass
+class GaussianRbfGainScheduler:
+    beta: float
+    gain_matrix_structs: list[GainMatrixStruct]
+
+    def basis_function(self, x: float, x_i: float, gain: np.ndarray) -> np.ndarray:
+        return np.exp(-self.beta * np.abs(x - x_i) ** 2) * gain
+
+    def curried_funcs(self):
+        return [
+            lambda x_: self.basis_function(x=x_, x_i=mat_struct.gain_location, gain=mat_struct.gain_matrix)
+            for mat_struct in self.gain_matrix_structs
+        ]
+
+    def __repr__(self):
+        repr_str = f"{self.__class__.__name__}\n"
+        for gain_mat in self.gain_matrix_structs:
+            repr_str += f"Gain Loc => {gain_mat.gain_location}\n"
+            repr_str += f"Gain Mat => {gain_mat.gain_matrix.__str__()}\n"
+        return repr_str
 
 
 if __name__ == "__main__":
@@ -95,11 +117,19 @@ if __name__ == "__main__":
         print(item.gain_matrix)
         print("\n")
 
-    result = gain_scheduler(gain_matrix_structs=generate_optimal_gains(pendulum_, test_points), beta=1)
-    for x_i_, a in zip(test_points, pendulum_jacobians(pendulum_, test_points)):
-        print("==" * 10)
-        print(f"{x_i_=} | {result(x_i_)=}")
-        b = np.array([[0], [1]])
-        print(f"Eigen Values -> {np.linalg.eig(a - b @ result(x_i_))[0]}")
-        print("==" * 10)
-        print("\n")
+    rbf_gain_scheduler = GaussianRbfGainScheduler(
+        beta=1,
+        gain_matrix_structs=generate_optimal_gains(pendulum_, test_points)
+    )
+
+    print(rbf_gain_scheduler)
+
+    print(rbf_gain_scheduler.curried_funcs())
+    # result = gain_scheduler(gain_matrix_structs=generate_optimal_gains(pendulum_, test_points), beta=1)
+    # for x_i_, a in zip(test_points, pendulum_jacobians(pendulum_, test_points)):
+    #     print("==" * 10)
+    #     print(f"{x_i_=} | {result(x_i_)=}")
+    #     b = np.array([[0], [1]])
+    #     print(f"Eigen Values -> {np.linalg.eig(a - b @ result(x_i_))[0]}")
+    #     print("==" * 10)
+    #     print("\n")
