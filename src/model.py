@@ -4,8 +4,6 @@ import numpy as np
 import functools
 from typing import Protocol, NamedTuple, Callable, Any
 
-from numpy import ndarray
-
 
 class System(Protocol):
     def update(self, t: float, x: np.ndarray, u: np.ndarray, params: dict) -> np.ndarray:
@@ -30,7 +28,12 @@ class Pendulum(System):
         return x
 
     def generate_system(self) -> control.NonlinearIOSystem:
-        ...
+        return control.NonlinearIOSystem(
+            self.update, self.output,
+            inputs=("u",), outputs=("x",),
+            states=("theta", "theta_dot"),
+            name="Pendulum System"
+        )
 
 
 def pendulum_jacobians(pendulum: Pendulum, x_1_points: list[float]) -> list[np.ndarray]:
@@ -55,9 +58,9 @@ def generate_optimal_gains(
         r_matrices: list[np.ndarray] | None = None) -> list[GainMatrixStruct]:
     a_matrices = pendulum_jacobians(pendulum, x_1_points)
     if q_matrices is None:
-        q_matrices = [np.eye(a_matrices[0].shape[1]) for _ in range(len(a_matrices))]
+        q_matrices = [np.diag((10, 1000)) for _ in range(len(a_matrices))]
     if r_matrices is None:
-        r_matrices = [np.eye(1) for _ in range(len(a_matrices))]
+        r_matrices = [10 * np.eye(1) for _ in range(len(a_matrices))]
 
     return [
         GainMatrixStruct(
@@ -88,14 +91,14 @@ class GaussianRbfGainScheduler:
     beta: float
     gain_matrix_structs: list[GainMatrixStruct]
 
-    def basis_function(self, x: float, x_i: float, gain: np.ndarray) -> np.ndarray:
-        return np.exp(-self.beta * np.abs(x - x_i) ** 2) * gain
+    def basis_function(self, x: float, x_i: float, gain_matrix: np.ndarray) -> np.ndarray:
+        return np.exp(-self.beta * np.abs(x - x_i) ** 2) * gain_matrix
 
-    def curried_funcs(self):
-        return [
-            lambda x_: self.basis_function(x=x_, x_i=mat_struct.gain_location, gain=mat_struct.gain_matrix)
-            for mat_struct in self.gain_matrix_structs
-        ]
+    def gain(self, x: np.ndarray | float):
+        locs = (mat_struct.gain_location for mat_struct in self.gain_matrix_structs)
+        gains = (mat_struct.gain_matrix for mat_struct in self.gain_matrix_structs)
+        total_gains = np.array([self.basis_function(x, location, gain) for location, gain in zip(locs, gains)])
+        return np.sum(total_gains, axis=0)
 
     def __repr__(self):
         repr_str = f"{self.__class__.__name__}\n"
@@ -105,13 +108,40 @@ class GaussianRbfGainScheduler:
         return repr_str
 
 
+@dataclasses.dataclass
+class PendulumController(System):
+    gain_scheduler: GaussianRbfGainScheduler
+
+    def update(self, t: float, x: np.ndarray, u: np.ndarray, params: dict) -> np.ndarray:
+        ...
+
+    def output(self, t: float, x: np.ndarray, u: np.ndarray, params: dict) -> np.ndarray:
+        return -self.gain_scheduler.gain(x) @ x
+
+    def generate_system(self) -> control.NonlinearIOSystem:
+        return control.NonlinearIOSystem(
+            None, self.output,
+            unputs=("", ), outputs=("", ),
+            states=("theta", "theta_dot"),
+            name="Pendulum Controller"
+        )
+
+
+@dataclasses.dataclass
+class ClosedLoopPendulum(System):
+    pendulum_system: control.NonlinearIOSystem
+    pendulum_controller: control.NonlinearIOSystem
+
+    def generate_system(self) -> control.NonlinearIOSystem:
+        return control.interconnect(
+            syslist=[self.pendulum_system, self.pendulum_controller],
+            inplist=("x", ""), outlist=("")
+        )
+
+
 if __name__ == "__main__":
     test_points = [np.pi, np.pi / 2, 0, -np.pi / 2]
-    pendulum_ = Pendulum(l=1)
-    for a in pendulum_jacobians(pendulum_, test_points):
-        w, v = np.linalg.eig(a)
-        print(a)
-        print(w)
+    pendulum_ = Pendulum(l=10)
 
     for item in generate_optimal_gains(pendulum_, test_points):
         print(item.gain_matrix)
@@ -123,13 +153,11 @@ if __name__ == "__main__":
     )
 
     print(rbf_gain_scheduler)
-
-    print(rbf_gain_scheduler.curried_funcs())
-    # result = gain_scheduler(gain_matrix_structs=generate_optimal_gains(pendulum_, test_points), beta=1)
-    # for x_i_, a in zip(test_points, pendulum_jacobians(pendulum_, test_points)):
-    #     print("==" * 10)
-    #     print(f"{x_i_=} | {result(x_i_)=}")
-    #     b = np.array([[0], [1]])
-    #     print(f"Eigen Values -> {np.linalg.eig(a - b @ result(x_i_))[0]}")
-    #     print("==" * 10)
-    #     print("\n")
+    print(f"{rbf_gain_scheduler.gain(np.pi)}=")
+    b = np.array([[0], [-1]])
+    x_sweep = np.linspace(-np.pi, np.pi, 3)
+    for a, x_test in zip(pendulum_jacobians(pendulum_, test_points), test_points):
+        w, v = np.linalg.eig(a)
+        w_1, _ = np.linalg.eig(a - b @ rbf_gain_scheduler.gain(x_test))
+        print(f"Eigen values {w}")
+        print(f"Closed loop values {w_1}")
